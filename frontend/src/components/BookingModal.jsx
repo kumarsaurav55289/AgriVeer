@@ -21,24 +21,39 @@ import {
   Check,
   AlertTriangle,
   KeyRound,
-  Shield
+  Shield,
+  Zap
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { useRazorpay } from '../hooks/useRazorpay';
+import RazorpayDemoCheckout from './RazorpayDemoCheckout';
+
+// Detect if real Razorpay keys are configured
+const HAS_REAL_RZP_KEY = (() => {
+  const key = (import.meta.env.VITE_RAZORPAY_KEY_ID || '').trim();
+  return key && key !== '' && key !== 'rzp_test_YourTestKeyIdHere';
+})();
 
 export default function BookingModal({ item, isOpen, onClose, currentUser, onBookingConfirmed }) {
-  if (!isOpen || !item) return null;
+  // ── ALL HOOKS MUST BE CALLED UNCONDITIONALLY (React Rules of Hooks) ──
+  // The early return guard is BELOW all hook declarations.
 
-  const isLand = item.type === 'land';
-  
   // STEP STATE: 'details' | 'payment' | 'processing' | 'confirmed'
   const [step, setStep] = useState('details');
 
+  // Razorpay hook — must be unconditional
+  const { openCheckout, isLoading: isRazorpayLoading } = useRazorpay();
+  const [razorpayError, setRazorpayError] = useState('');
+
   const [duration, setDuration] = useState(1);
-  const [unitType, setUnitType] = useState(item.hourlyRate ? 'hours' : isLand ? 'acres' : 'days');
+  // Lazy initializers — safe even when item is null on first render
+  const [unitType, setUnitType] = useState(() =>
+    item?.hourlyRate ? 'hours' : item?.type === 'land' ? 'acres' : 'days'
+  );
   const [startDate, setStartDate] = useState(new Date().toISOString().split('T')[0]);
-  
+
   // Add-on states
-  const [includeDriver, setIncludeDriver] = useState(item.specs?.driverProvided || false);
+  const [includeDriver, setIncludeDriver] = useState(() => item?.specs?.driverProvided || false);
   const [includeFuel, setIncludeFuel] = useState(false);
   const [includeTransport, setIncludeTransport] = useState(true);
 
@@ -46,20 +61,25 @@ export default function BookingModal({ item, isOpen, onClose, currentUser, onBoo
   const [farmerName, setFarmerName] = useState(currentUser?.name || '');
   const [farmerPhone, setFarmerPhone] = useState(currentUser?.phone || '');
   const [farmerAadhaar, setFarmerAadhaar] = useState(currentUser?.aadhaar || '');
-  const [farmAddress, setFarmAddress] = useState(currentUser?.address || (currentUser?.district ? `${currentUser.district}, ${currentUser.state}` : ''));
+  const [farmAddress, setFarmAddress] = useState(
+    currentUser?.address ||
+    (currentUser?.district ? `${currentUser.district}, ${currentUser.state}` : '')
+  );
 
   // PAYMENT PROTECTION MODEL: 'escrow' | 'token' | 'cod'
   const [paymentModel, setPaymentModel] = useState('escrow');
 
   // PAYMENT GATEWAY METHOD: 'upi' | 'card' | 'netbanking' | 'kcc'
   const [paymentMethod, setPaymentMethod] = useState('upi');
-  const [upiId, setUpiId] = useState(currentUser?.phone ? `${currentUser.phone}@upi` : '9876543210@paytm');
-  
+  const [upiId, setUpiId] = useState(
+    currentUser?.phone ? `${currentUser.phone}@upi` : '9876543210@paytm'
+  );
+
   // Card states
   const [cardNumber, setCardNumber] = useState('4532 8912 0041 9823');
   const [cardExpiry, setCardExpiry] = useState('08/29');
   const [cardCvv, setCardCvv] = useState('892');
-  const [cardName, setCardName] = useState(farmerName || 'Gurpreet Singh');
+  const [cardName, setCardName] = useState(currentUser?.name || 'Gurpreet Singh');
 
   // Net banking state
   const [selectedBank, setSelectedBank] = useState('SBI');
@@ -71,6 +91,14 @@ export default function BookingModal({ item, isOpen, onClose, currentUser, onBoo
   const [txnId, setTxnId] = useState('');
   const [deliveryOtp, setDeliveryOtp] = useState('');
   const [processingStatus, setProcessingStatus] = useState('Connecting to Payment Gateway...');
+
+  // Demo checkout modal state
+  const [isDemoCheckoutOpen, setIsDemoCheckoutOpen] = useState(false);
+
+  // ── EARLY RETURN GUARD (after all hooks) ──
+  if (!isOpen || !item) return null;
+
+  const isLand = item.type === 'land';
 
   // Cost calculation logic
   let baseRate = item.dailyRate || item.acreRate || 1000;
@@ -629,16 +657,114 @@ export default function BookingModal({ item, isOpen, onClose, currentUser, onBoo
                   </div>
                 )}
 
-                {/* Final Pay / Confirm Action CTA */}
+                {/* Razorpay Error Message */}
+                {razorpayError && paymentModel !== 'cod' && (
+                  <div className="flex items-center gap-2 bg-red-50 border border-red-200 text-red-800 text-xs font-semibold px-4 py-3 rounded-xl">
+                    <AlertTriangle className="w-4 h-4 shrink-0 text-red-500" />
+                    <span>{razorpayError}</span>
+                  </div>
+                )}
+
+                {/* ── PAY VIA RAZORPAY (Real Payment or Demo Modal) — Only for Escrow & Token ── */}
+                {paymentModel !== 'cod' && (
+                  <>
+                    <button
+                      type="button"
+                      disabled={isRazorpayLoading}
+                      onClick={() => {
+                        setRazorpayError('');
+                        const payable = paymentModel === 'token' ? tokenPayable : grandTotal;
+
+                        // If real Razorpay keys are configured, use real SDK
+                        if (HAS_REAL_RZP_KEY) {
+                          openCheckout({
+                            amount: payable,
+                            receipt: 'agr-' + Date.now(),
+                            name: 'Agriveer',
+                            description: `Rental: ${item.title}`,
+                            prefill: {
+                              name: farmerName,
+                              contact: farmerPhone.replace(/\D/g, '').slice(-10)
+                            },
+                            notes: {
+                              item: item.title,
+                              owner: item.ownerName,
+                              renter: farmerName
+                            },
+                            onSuccess: (rzpData) => {
+                              const generatedRef = 'AGR-' + Math.floor(100000 + Math.random() * 900000);
+                              const generatedOtp = Math.floor(1000 + Math.random() * 9000).toString();
+                              setRefId(generatedRef);
+                              setTxnId(rzpData.razorpay_payment_id);
+                              setDeliveryOtp(generatedOtp);
+                              setStep('confirmed');
+                              if (onBookingConfirmed) {
+                                onBookingConfirmed({
+                                  id: generatedRef,
+                                  txnId: rzpData.razorpay_payment_id,
+                                  deliveryOtp: generatedOtp,
+                                  paymentModel,
+                                  paymentMethod: 'RAZORPAY',
+                                  itemTitle: item.title,
+                                  itemImage: item.image,
+                                  ownerName: item.ownerName,
+                                  ownerPhone: item.ownerPhone,
+                                  totalCost: grandTotal,
+                                  onlinePaid: payable,
+                                  balanceDueOnDelivery: paymentModel === 'token' ? remainingOnDelivery : 0,
+                                  farmerName,
+                                  farmerPhone,
+                                  farmerAadhaar,
+                                  farmerAddress: farmAddress,
+                                  bookingDate: new Date().toLocaleDateString()
+                                });
+                              }
+                            },
+                            onFailure: (msg) => {
+                              setRazorpayError(msg);
+                            }
+                          });
+                        } else {
+                          // Open the beautiful demo Razorpay checkout
+                          setIsDemoCheckoutOpen(true);
+                        }
+                      }}
+                      className="w-full py-4 bg-[#0d2e87] hover:bg-[#0a2270] disabled:opacity-60 text-white font-black rounded-2xl text-sm shadow-xl transition-all flex items-center justify-center gap-2 cursor-pointer active:scale-95"
+                    >
+                      {isRazorpayLoading ? (
+                        <><RefreshCw className="w-4 h-4 animate-spin" /><span>Opening Razorpay...</span></>
+                      ) : (
+                        <>
+                          <Zap className="w-4 h-4 text-blue-200" />
+                          <span>
+                            Pay ₹{(paymentModel === 'token' ? tokenPayable : grandTotal).toLocaleString()} via Razorpay
+                          </span>
+                          <span className="text-[10px] bg-white/20 px-2 py-0.5 rounded-full font-bold">
+                            {HAS_REAL_RZP_KEY ? 'UPI · Card · NB' : 'Demo Checkout'}
+                          </span>
+                        </>
+                      )}
+                    </button>
+
+                    {/* Divider */}
+                    <div className="flex items-center gap-3">
+                      <div className="flex-1 h-px bg-slate-200" />
+                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">or simulate payment</span>
+                      <div className="flex-1 h-px bg-slate-200" />
+                    </div>
+                  </>
+                )}
+
+                {/* Final Pay / Confirm Action CTA (Simulated / COD) */}
                 <button
                   type="button"
                   onClick={handleExecutePayment}
-                  className="w-full py-4 bg-emerald-600 hover:bg-emerald-700 text-white font-black rounded-2xl text-sm shadow-xl transition-all flex items-center justify-center gap-2 cursor-pointer active:scale-95"
+                  className="w-full py-3.5 bg-emerald-600 hover:bg-emerald-700 text-white font-black rounded-2xl text-sm shadow-xl transition-all flex items-center justify-center gap-2 cursor-pointer active:scale-95"
                 >
                   <Lock className="w-4 h-4 text-emerald-200" />
                   <span>
-                    {paymentModel === 'escrow' ? `Pay ₹${grandTotal.toLocaleString()} into Escrow Vault` :
-                     paymentModel === 'token' ? `Pay ₹${tokenPayable.toLocaleString()} Token Advance` :
+                    {paymentModel === 'escrow' ? `Simulate ₹${grandTotal.toLocaleString()} Escrow` :
+                     paymentModel === 'token' ? `Simulate ₹${tokenPayable.toLocaleString()} Token` :
                      `Confirm ₹0 Advance Delivery Booking`}
                   </span>
                 </button>
@@ -754,6 +880,61 @@ export default function BookingModal({ item, isOpen, onClose, currentUser, onBoo
           </div>
         </motion.div>
       </div>
+
+      {/* ── RAZORPAY DEMO CHECKOUT MODAL ── */}
+      {isDemoCheckoutOpen && (
+        <RazorpayDemoCheckout
+          isOpen={isDemoCheckoutOpen}
+          onClose={() => setIsDemoCheckoutOpen(false)}
+          amount={paymentModel === 'token' ? tokenPayable : grandTotal}
+          currency="INR"
+          businessName="Agriveer"
+          description={`Rental: ${item?.title || 'Agricultural Equipment'}`}
+          itemImage={item?.image}
+          itemTitle={item?.title}
+          prefill={{
+            name: farmerName,
+            contact: farmerPhone.replace(/\D/g, '').slice(-10)
+          }}
+          onSuccess={(rzpData) => {
+            setIsDemoCheckoutOpen(false);
+            const generatedRef = 'AGR-' + Math.floor(100000 + Math.random() * 900000);
+            const generatedOtp = Math.floor(1000 + Math.random() * 9000).toString();
+            setRefId(generatedRef);
+            setTxnId(rzpData.razorpay_payment_id);
+            setDeliveryOtp(generatedOtp);
+            setStep('confirmed');
+            if (onBookingConfirmed) {
+              const payable = paymentModel === 'token' ? tokenPayable : grandTotal;
+              onBookingConfirmed({
+                id: generatedRef,
+                txnId: rzpData.razorpay_payment_id,
+                deliveryOtp: generatedOtp,
+                paymentModel,
+                paymentMethod: 'RAZORPAY_DEMO',
+                itemTitle: item.title,
+                itemImage: item.image,
+                ownerName: item.ownerName,
+                ownerPhone: item.ownerPhone,
+                totalCost: grandTotal,
+                onlinePaid: payable,
+                balanceDueOnDelivery: paymentModel === 'token' ? remainingOnDelivery : 0,
+                farmerName,
+                farmerPhone,
+                farmerAadhaar,
+                farmerAddress: farmAddress,
+                bookingDate: new Date().toLocaleDateString()
+              });
+            }
+          }}
+          onFailure={(msg) => {
+            setIsDemoCheckoutOpen(false);
+            if (msg && msg !== 'Payment cancelled.') {
+              setRazorpayError(msg);
+            }
+          }}
+        />
+      )}
     </AnimatePresence>
   );
 }

@@ -11,7 +11,7 @@ export default function AiAssistant() {
     {
       id: 1,
       sender: 'bot',
-      text: 'Sat Sri Akal! Namaste! I am your Agriveer Kisan AI Assistant. How can I help you today with tractor rentals, land leases, or Escrow payments?',
+      text: 'Namaste! I am your Agriveer Kisan AI Assistant. How can I help you today with tractor rentals, land leases, or Escrow payments?',
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     }
   ]);

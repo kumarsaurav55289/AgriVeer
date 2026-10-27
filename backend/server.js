@@ -3,6 +3,10 @@ import cors from 'cors';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import Razorpay from 'razorpay';
+import crypto from 'crypto';
+import dotenv from 'dotenv';
+dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -161,6 +165,58 @@ app.post('/api/auth/login', (req, res) => {
   };
   res.json({ success: true, user: demoUser });
 });
+
+// ─── RAZORPAY PAYMENT ROUTES ─────────────────────────────────────────────────
+
+const razorpay = new Razorpay({
+  key_id: process.env.RAZORPAY_KEY_ID,
+  key_secret: process.env.RAZORPAY_KEY_SECRET
+});
+
+// POST /api/payments/create-order — creates a Razorpay order
+app.post('/api/payments/create-order', async (req, res) => {
+  const { amount, currency = 'INR', receipt, notes } = req.body;
+
+  if (!amount || amount <= 0) {
+    return res.status(400).json({ error: 'A valid amount is required.' });
+  }
+
+  try {
+    const order = await razorpay.orders.create({
+      amount: Math.round(amount * 100), // Razorpay expects paise (1 INR = 100 paise)
+      currency,
+      receipt: receipt || 'agr-' + Date.now(),
+      notes: notes || {}
+    });
+    res.json({ success: true, order });
+  } catch (err) {
+    console.error('Razorpay create-order error:', err);
+    res.status(500).json({ error: 'Failed to create Razorpay order.', details: err.message });
+  }
+});
+
+// POST /api/payments/verify — verifies Razorpay payment signature (HMAC-SHA256)
+app.post('/api/payments/verify', (req, res) => {
+  const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
+
+  if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature) {
+    return res.status(400).json({ success: false, error: 'Missing payment verification fields.' });
+  }
+
+  const body = razorpay_order_id + '|' + razorpay_payment_id;
+  const expectedSignature = crypto
+    .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
+    .update(body)
+    .digest('hex');
+
+  if (expectedSignature === razorpay_signature) {
+    res.json({ success: true, payment_id: razorpay_payment_id });
+  } else {
+    res.status(400).json({ success: false, error: 'Payment signature verification failed.' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 app.listen(PORT, () => {
   console.log(`🚀 Agriveer Backend API server running on http://localhost:${PORT}`);
